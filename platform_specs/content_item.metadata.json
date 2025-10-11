@@ -1,0 +1,23 @@
+{
+    "name": "content_item",
+    "columns": [
+        "id",
+        "slug",
+        "content_type",
+        "platform",
+        "creative_type",
+        "source_url",
+        "xpath",
+        "language_code",
+        "is_enabled",
+        "content_text",
+        "content_html",
+        "content_sha",
+        "last_scraped_at",
+        "extra_meta",
+        "embedding",
+        "created_at",
+        "updated_at"
+    ],
+    "schema": "CREATE TABLE [content_item] (\n   [id] INTEGER PRIMARY KEY,\n   [slug] TEXT,\n   [content_type] TEXT,\n   [platform] TEXT,\n   [creative_type] TEXT,\n   [source_url] TEXT,\n   [xpath] TEXT,\n   [language_code] TEXT,\n   [is_enabled] INTEGER,\n   [content_text] TEXT,\n   [content_html] TEXT,\n   [content_sha] TEXT,\n   [last_scraped_at] TEXT,\n   [extra_meta] TEXT,\n   [embedding] TEXT,\n   [created_at] TEXT,\n   [updated_at] TEXT\n)"
+}
