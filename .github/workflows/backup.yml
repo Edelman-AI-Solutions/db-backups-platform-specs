@@ -1,4 +1,4 @@
-name: Back up my blog database
+name: Back up database
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
         required: false 
         type: boolean
   schedule:
-    - cron: '26 */2 * * *'
+    - cron: '0 13 * * 1-5'
 
 jobs:
   backup:
@@ -35,182 +35,159 @@ jobs:
     - name: Install Python dependencies
       run: |
         pip install -r requirements.txt
-    - name: Install Heroku CLI
-      run: curl https://cli-assets.heroku.com/install-ubuntu.sh | sh
-    - name: Import Heroku DB into SQLite
-      env:
-        HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+    - name: Import Postgres Database into SQLite
       run: |-
         db-to-sqlite \
-          $(heroku config:get DATABASE_URL -a simonwillisonblog | sed s/postgres:/postgresql+psycopg2:/) \
-          simonwillisonblog.db \
-          --table auth_permission \
-          --table auth_user \
-          --table blog_blogmark \
-          --table blog_blogmark_tags \
-          --table blog_entry \
-          --table blog_entry_tags \
-          --table blog_quotation \
-          --table blog_quotation_tags \
-          --table blog_note \
-          --table blog_note_tags \
-          --table blog_tag \
-          --table blog_previoustagname \
-          --table blog_series \
-          --table django_content_type \
-          --table redirects_redirect
-        sqlite-utils tables simonwillisonblog.db --counts --columns
+          $($DATABASE_URL | sed s/postgres:/postgresql+psycopg2:/) \
+          platform_specs.db \
+          --table content_item
+        sqlite-utils tables platform_specs.db --counts --columns
     - name: Various database modifications
       run: |-
-        # Redact passwords
-        sqlite-utils simonwillisonblog.db "update auth_user set password = null"
-
-        # Remove draft posts
-        sqlite-utils simonwillisonblog.db "delete from blog_entry where is_draft = 1"
-        sqlite-utils simonwillisonblog.db "delete from blog_blogmark where is_draft = 1"
-        sqlite-utils simonwillisonblog.db "delete from blog_quotation where is_draft = 1"
-
-        # Remove un-interesting search_document columns
-        sqlite-utils transform simonwillisonblog.db blog_blogmark --drop search_document
-        sqlite-utils transform simonwillisonblog.db blog_entry --drop search_document
-        sqlite-utils transform simonwillisonblog.db blog_quotation --drop search_document
-
-        # Unique index on blog_tag.tag so Datasette uses it as a foreign key label
-        sqlite-utils create-index simonwillisonblog.db blog_tag tag --unique
+        # Unique index on content_item.slug so Datasette uses it as a foreign key label
+        sqlite-utils create-index platform_specs.db content_item slug --unique
     - name: Convert to newline-delimited JSON
       run: |-
-        rm simonwillisonblog/* || true
-        sqlite-diffable dump simonwillisonblog.db simonwillisonblog --all
-    - name: Backup Substack
-      run: |-
-        curl 'https://simonw.substack.com/feed' | \
-          python -c "import sys, re; print(re.sub(r'<lastBuildDate>.*?</lastBuildDate>', '', sys.stdin.read(), flags=re.DOTALL))" \
-          > simonw-substack-com.xml
+        rm platform-specs/* || true
+        sqlite-diffable dump platform_specs.db platform_specs --all
     - name: Commit any changes
       id: commit_and_push
       run: |-
         git config user.name "Automated"
         git config user.email "actions@users.noreply.github.com"
-        git add simonwillisonblog
-        git add simonw-substack-com.xml
+        git add platform_specs
         timestamp=$(date -u)
         git commit -m "Latest data: ${timestamp}" || exit 0
         git push
         echo "change_detected=1" >> $GITHUB_OUTPUT
-  build_and_deploy:
-    runs-on: ubuntu-latest
-    needs: backup
-    if: >
-      ${{ inputs.force_deploy || needs.backup.outputs.change_detected || 
-        contains(github.event.workflow_run.head_commit.modified, '.github/workflows/backup.yml') }}
-    steps:
-    - name: Check out repo
-      uses: actions/checkout@v3
-      with:
-        ref: main
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: "3.9"
-    - uses: actions/cache@v3
-      name: Configure pip caching
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    - name: Install Python dependencies
-      run: |
-        pip install -r requirements.txt
-    - name: Restore previous database
-      continue-on-error: true
-      run: |-
-        wget -q https://datasette.simonwillison.net/simonwillisonblog.db
-    - name: Vacuum restored database
-      run: |-
-        if [ -f simonwillisonblog.db ]; then
-          if ! sqlite3 simonwillisonblog.db 'VACUUM;'; then
-            echo "::warning::sqlite3 VACUUM failed; attempting recovery"
-            sqlite3 simonwillisonblog.db ".recover" | sqlite3 recovered.db
-            if sqlite3 recovered.db 'VACUUM;'; then
-              echo "::notice::Recovery successful, using recovered database"
-              mv recovered.db simonwillisonblog.db
-            else
-              echo "::warning::Recovery failed; deleting simonwillisonblog.db and continuing"
-              rm -f simonwillisonblog.db recovered.db || true
-            fi
-          fi
-        fi
-    - name: Build database
-      run: |-
-        sqlite-diffable load simonwillisonblog.db simonwillisonblog --replace
-        sqlite-utils tables simonwillisonblog.db --counts
-    - name: Extract entities
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.COMPREHEND_ACCESS_KEY }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.COMPREHEND_SECRET_KEY }}
-        AWS_DEFAULT_REGION: us-west-2
-      run: |-
-        which sqlite-comprehend
-        sqlite-comprehend --version
-        sqlite-comprehend --help
-        sqlite-comprehend entities --help
-        sqlite-comprehend entities simonwillisonblog.db blog_entry title body --strip-tags
-        sqlite-utils tables simonwillisonblog.db --counts
-    - name: Import the OpenAI embeddings
-      run: |-
-        wget https://static.simonwillison.net/static/2023/blog-embeddings/blog.db
-        # Create table (if it does not exist yet)
-        sqlite-utils create-table simonwillisonblog.db blog_entry_embeddings \
-          id integer embedding blob --pk id --ignore
-        # Import/replace the embeddings
-        sqlite-utils simonwillisonblog.db --attach embeddings blog.db \
-          'replace into blog_entry_embeddings select cast(id as integer), embedding from embeddings.embeddings'
-    - name: Configure FTS
-      run: |-
-        set +e
-        sqlite-utils enable-fts simonwillisonblog.db blog_series title summary --create-triggers --tokenize porter 2>/dev/null
-        sqlite-utils enable-fts simonwillisonblog.db blog_tag tag --create-triggers --tokenize porter 2>/dev/null
-        sqlite-utils enable-fts simonwillisonblog.db blog_quotation quotation source --create-triggers --tokenize porter 2>/dev/null
-        sqlite-utils enable-fts simonwillisonblog.db blog_entry title body --create-triggers --tokenize porter 2>/dev/null
-        sqlite-utils enable-fts simonwillisonblog.db blog_blogmark link_title via_title commentary --create-triggers --tokenize porter 2>/dev/null
-        set -e
-        # Re-populate tables just in case they're missing anything
-        sqlite-utils populate-fts simonwillisonblog.db blog_series title summary
-        sqlite-utils populate-fts simonwillisonblog.db blog_tag tag
-        sqlite-utils populate-fts simonwillisonblog.db blog_quotation quotation source
-        sqlite-utils populate-fts simonwillisonblog.db blog_entry title body
-        sqlite-utils populate-fts simonwillisonblog.db blog_blogmark link_title via_title commentary
-    - name: Copy in latest TILs
-      run: |
-        wget https://s3.amazonaws.com/til.simonwillison.net/tils.db
-        echo "
-        attach database 'simonwillisonblog.db' as simonwillisonblog;
-        attach database 'tils.db' as tils;
-        drop table if exists simonwillisonblog.til;
-        create table simonwillisonblog.til as select * from tils.til;
-        " | sqlite3
-    - name: Install Fly
-      run: |
-        curl -L https://fly.io/install.sh | sh
-    - name: Deploy to Fly.io
-      env:
-        FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
-      run: |-
-        PATH=$PATH:/home/runner/.fly/bin/ datasette publish fly simonwillisonblog.db \
-          -m metadata.yml \
-          --app simonwillisonblog-backup \
-          --branch 1.0a2 \
-          --extra-options "--setting sql_time_limit_ms 15000 --setting truncate_cells_html 10000 --setting allow_facet off" \
-          --install packaging \
-          --install datasette-block-robots \
-          --install datasette-graphql \
-          --install datasette-search-all \
-          --install "datasette-openai>=0.1a2" \
-          --install "datasette-cookies-for-magic-parameters>=0.1.2" \
-          --install datasette-json-html \
-          --install datasette-sqlite-regex \
-          --install "datasette-explain>=0.1a2" \
-          --install "datasette-faiss>=0.2.1" \
-          --install datasette-simple-html \
-          --install datasette-dateutil
+  # build_and_deploy:
+  #   runs-on: ubuntu-latest
+  #   needs: backup
+  #   if: >
+  #     ${{ inputs.force_deploy || needs.backup.outputs.change_detected || 
+  #       contains(github.event.workflow_run.head_commit.modified, '.github/workflows/backup.yml') }}
+  #   steps:
+  #   # ---# ────────────────────────── [Install Vercel CLI] ──────────────────────────
+  #   - name: Install Node
+  #     uses: actions/setup-node@v3
+  #     with:
+  #       node-version: 18
+  #   - name: Install Vercel
+  #     run: npm install -g vercel
+  #   - name: Check out repo
+  #     uses: actions/checkout@v3
+  #     with:
+  #       ref: main
+  #   - name: publish to vercel repo
+  #     run: |
+  #       datasette publish vercel platform_specs.db \
+  #       --token  ${{ secrets.VERCEL_TOKEN }} \
+  #       --project datasette-platform-specs
+        
+  #   # ---# ────────────────────────── [------------------- ──────────────────────────    
+  #   - name: Set up Python
+  #     uses: actions/setup-python@v3
+  #     with:
+  #       python-version: "3.9"
+  #   - uses: actions/cache@v3
+  #     name: Configure pip caching
+  #     with:
+  #       path: ~/.cache/pip
+  #       key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+  #       restore-keys: |
+  #         ${{ runner.os }}-pip-
+  #   - name: Install Python dependencies
+  #     run: |
+  #       pip install -r requirements.txt
+  #   - name: Restore previous database
+  #     continue-on-error: true
+  #     run: |-
+  #       wget -q https://datasette.simonwillison.net/simonwillisonblog.db
+  #   - name: Vacuum restored database
+  #     run: |-
+  #       if [ -f simonwillisonblog.db ]; then
+  #         if ! sqlite3 simonwillisonblog.db 'VACUUM;'; then
+  #           echo "::warning::sqlite3 VACUUM failed; attempting recovery"
+  #           sqlite3 simonwillisonblog.db ".recover" | sqlite3 recovered.db
+  #           if sqlite3 recovered.db 'VACUUM;'; then
+  #             echo "::notice::Recovery successful, using recovered database"
+  #             mv recovered.db simonwillisonblog.db
+  #           else
+  #             echo "::warning::Recovery failed; deleting simonwillisonblog.db and continuing"
+  #             rm -f simonwillisonblog.db recovered.db || true
+  #           fi
+  #         fi
+  #       fi
+  #   - name: Build database
+  #     run: |-
+  #       sqlite-diffable load simonwillisonblog.db simonwillisonblog --replace
+  #       sqlite-utils tables simonwillisonblog.db --counts
+  #   - name: Extract entities
+  #     env:
+  #       AWS_ACCESS_KEY_ID: ${{ secrets.COMPREHEND_ACCESS_KEY }}
+  #       AWS_SECRET_ACCESS_KEY: ${{ secrets.COMPREHEND_SECRET_KEY }}
+  #       AWS_DEFAULT_REGION: us-west-2
+  #     run: |-
+  #       which sqlite-comprehend
+  #       sqlite-comprehend --version
+  #       sqlite-comprehend --help
+  #       sqlite-comprehend entities --help
+  #       sqlite-comprehend entities simonwillisonblog.db blog_entry title body --strip-tags
+  #       sqlite-utils tables simonwillisonblog.db --counts
+  #   - name: Import the OpenAI embeddings
+  #     run: |-
+  #       wget https://static.simonwillison.net/static/2023/blog-embeddings/blog.db
+  #       # Create table (if it does not exist yet)
+  #       sqlite-utils create-table simonwillisonblog.db blog_entry_embeddings \
+  #         id integer embedding blob --pk id --ignore
+  #       # Import/replace the embeddings
+  #       sqlite-utils simonwillisonblog.db --attach embeddings blog.db \
+  #         'replace into blog_entry_embeddings select cast(id as integer), embedding from embeddings.embeddings'
+  #   - name: Configure FTS
+  #     run: |-
+  #       set +e
+  #       sqlite-utils enable-fts simonwillisonblog.db blog_series title summary --create-triggers --tokenize porter 2>/dev/null
+  #       sqlite-utils enable-fts simonwillisonblog.db blog_tag tag --create-triggers --tokenize porter 2>/dev/null
+  #       sqlite-utils enable-fts simonwillisonblog.db blog_quotation quotation source --create-triggers --tokenize porter 2>/dev/null
+  #       sqlite-utils enable-fts simonwillisonblog.db blog_entry title body --create-triggers --tokenize porter 2>/dev/null
+  #       sqlite-utils enable-fts simonwillisonblog.db blog_blogmark link_title via_title commentary --create-triggers --tokenize porter 2>/dev/null
+  #       set -e
+  #       # Re-populate tables just in case they're missing anything
+  #       sqlite-utils populate-fts simonwillisonblog.db blog_series title summary
+  #       sqlite-utils populate-fts simonwillisonblog.db blog_tag tag
+  #       sqlite-utils populate-fts simonwillisonblog.db blog_quotation quotation source
+  #       sqlite-utils populate-fts simonwillisonblog.db blog_entry title body
+  #       sqlite-utils populate-fts simonwillisonblog.db blog_blogmark link_title via_title commentary
+  #   - name: Copy in latest TILs
+  #     run: |
+  #       wget https://s3.amazonaws.com/til.simonwillison.net/tils.db
+  #       echo "
+  #       attach database 'simonwillisonblog.db' as simonwillisonblog;
+  #       attach database 'tils.db' as tils;
+  #       drop table if exists simonwillisonblog.til;
+  #       create table simonwillisonblog.til as select * from tils.til;
+  #       " | sqlite3
+  #   - name: Install Fly
+  #     run: |
+  #       curl -L https://fly.io/install.sh | sh
+  #   - name: Deploy to Fly.io
+  #     env:
+  #       FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
+  #     run: |-
+  #       PATH=$PATH:/home/runner/.fly/bin/ datasette publish fly simonwillisonblog.db \
+  #         -m metadata.yml \
+  #         --app simonwillisonblog-backup \
+  #         --branch 1.0a2 \
+  #         --extra-options "--setting sql_time_limit_ms 15000 --setting truncate_cells_html 10000 --setting allow_facet off" \
+  #         --install packaging \
+  #         --install datasette-block-robots \
+  #         --install datasette-graphql \
+  #         --install datasette-search-all \
+  #         --install "datasette-openai>=0.1a2" \
+  #         --install "datasette-cookies-for-magic-parameters>=0.1.2" \
+  #         --install datasette-json-html \
+  #         --install datasette-sqlite-regex \
+  #         --install "datasette-explain>=0.1a2" \
+  #         --install "datasette-faiss>=0.2.1" \
+  #         --install datasette-simple-html \
+  #         --install datasette-dateutil
