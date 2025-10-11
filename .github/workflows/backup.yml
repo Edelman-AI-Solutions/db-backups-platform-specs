@@ -37,9 +37,7 @@ jobs:
         pip install -r requirements.txt
     - name: Import Postgres Database into SQLite
       run: |-
-        db-to-sqlite \
-          $($DATABASE_URL | sed s/postgres:/postgresql+psycopg2:/) \
-          platform_specs.db \
+        db-to-sqlite "${{ secrets.DATABASE_URL }}" platform_specs.db \
           --table content_item
         sqlite-utils tables platform_specs.db --counts --columns
     - name: Various database modifications
