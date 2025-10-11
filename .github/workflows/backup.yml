@@ -36,8 +36,10 @@ jobs:
       run: |
         pip install -r requirements.txt
     - name: Import Postgres Database into SQLite
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
       run: |-
-        db-to-sqlite "${{ secrets.DATABASE_URL }}" platform_specs.db \
+        db-to-sqlite "$DATABASE_URL" platform_specs.db \
           --table content_item
         sqlite-utils tables platform_specs.db --counts --columns
     - name: Various database modifications
