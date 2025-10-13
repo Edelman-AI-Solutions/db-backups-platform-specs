@@ -154,16 +154,16 @@ jobs:
   #       drop table if exists simonwillisonblog.til;
   #       create table simonwillisonblog.til as select * from tils.til;
   #       " | sqlite3
-      # ---# ────────────────────────── [Install Vercel CLI] ──────────────────────────
-    - name: Install Node
-      uses: actions/setup-node@v3
-      with:
-        node-version: 18
-    - name: Install Vercel
-      run: npm install -g vercel
-    - name: publish to vercel repo
-      run: |
-        datasette publish vercel platform_specs.db \
-        --token  ${{ secrets.VERCEL_TOKEN }} \
-        --project db-platform-specs
+      # ---# ────────────────────────── [Backup to Vercel] ──────────────────────────
+    # - name: Install Node
+    #   uses: actions/setup-node@v3
+    #   with:
+    #     node-version: 18
+    # - name: Install Vercel
+    #   run: npm install -g vercel
+    # - name: publish to vercel repo
+    #   run: |
+    #     datasette publish vercel platform_specs.db \
+    #     --token  ${{ secrets.VERCEL_TOKEN }} \
+    #     --project db-platform-specs
   #   # ---# ────────────────────────── [------------------- ──────────────────────────    
