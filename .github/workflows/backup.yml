@@ -76,6 +76,7 @@ jobs:
           --token  ${{ secrets.VERCEL_TOKEN }} \
           --project db-platform-specs \
           --vercel-json=vercel.json
+          --no-prod
   # build_and_deploy:
     # runs-on: ubuntu-latest
     # needs: backup
