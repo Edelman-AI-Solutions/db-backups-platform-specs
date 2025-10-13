@@ -60,13 +60,13 @@ jobs:
         git commit -m "Latest data: ${timestamp}" || exit 0
         git push
         echo "change_detected=1" >> $GITHUB_OUTPUT
-      - name: Install Node
+    - name: Install Node
         uses: actions/setup-node@v3
         with:
           node-version: 18
-      - name: Install Vercel
+    - name: Install Vercel
         run: npm install -g vercel
-      - name: publish to vercel repo
+    - name: publish to vercel repo
         run: |
           datasette publish vercel platform_specs.db \
           --token  ${{ secrets.VERCEL_TOKEN }} \
